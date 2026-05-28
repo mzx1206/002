@@ -1,35 +1,57 @@
-#!/usr/bin/env python3
-"""
-无人机心跳模拟系统
-模拟无人机与地面站之间的心跳包通信，支持丢包、延迟模拟和超时检测
-"""
-
+import streamlit as st
 import time
-import threading
 import random
-import argparse
-import signal
-import sys
+import pandas as pd
 from datetime import datetime
-from collections import deque
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from matplotlib.patches import Rectangle
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 
+# 设置页面配置
+st.set_page_config(
+    page_title="无人机心跳监控系统",
+    page_icon="🚁",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# 自定义CSS
+st.markdown("""
+<style>
+    .stButton > button {
+        width: 100%;
+        background-color: #4CAF50;
+        color: white;
+        font-size: 16px;
+        font-weight: bold;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 15px;
+        border-radius: 10px;
+        margin: 10px 0;
+    }
+    .warning-text {
+        color: #ff4b4b;
+        font-weight: bold;
+    }
+    .success-text {
+        color: #00cc00;
+        font-weight: bold;
+    }
+    .info-box {
+        background-color: #e3f2fd;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #2196f3;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 class DroneHeartbeatSimulator:
     """无人机心跳模拟器类"""
     
     def __init__(self, timeout=3, loss_rate=0.1, enable_delay=True, max_delay=0.5):
-        """
-        初始化无人机心跳模拟器
-        
-        Args:
-            timeout: 超时阈值（秒）
-            loss_rate: 丢包率 (0-1)
-            enable_delay: 是否启用延迟模拟
-            max_delay: 最大延迟时间（秒）
-        """
         self.timeout = timeout
         self.loss_rate = loss_rate
         self.enable_delay = enable_delay
@@ -37,11 +59,12 @@ class DroneHeartbeatSimulator:
         self.sequence = 0
         self.last_heartbeat_time = time.time()
         self.connected = True
-        self.heartbeat_data = []  # 存储所有心跳数据
-        self.received_heartbeats = deque(maxlen=100)  # 存储最近的心跳记录
-        self.running = True
+        self.heartbeat_data = []
         self.packet_loss_count = 0
         self.timeout_count = 0
+        self.running = False
+        self.start_time = None
+        self.last_update_time = 0
         
     def send_heartbeat(self):
         """发送心跳包"""
@@ -53,7 +76,6 @@ class DroneHeartbeatSimulator:
             'status': 'SENT'
         }
         self.heartbeat_data.append(heartbeat)
-        print(f"[发送] 序号: {heartbeat['seq']:4d}, 时间: {heartbeat['datetime']}")
         return heartbeat
     
     def receive_heartbeat(self, heartbeat):
@@ -65,15 +87,14 @@ class DroneHeartbeatSimulator:
         heartbeat['receive_time'] = current_time
         heartbeat['delay'] = delay
         
-        self.received_heartbeats.append(heartbeat)
         self.last_heartbeat_time = current_time
         
         # 更新连接状态
         if not self.connected:
             self.connected = True
-            print(f"\n[系统] ✓ 连接已恢复！")
+            return True  # 连接恢复
         
-        print(f"[接收] 序号: {heartbeat['seq']:4d}, 延迟: {delay:.3f}秒, 时间: {heartbeat['datetime']}")
+        return False  # 连接未变化
     
     def check_timeout(self):
         """检查是否超时"""
@@ -81,116 +102,94 @@ class DroneHeartbeatSimulator:
         if self.connected and (current_time - self.last_heartbeat_time) > self.timeout:
             self.connected = False
             self.timeout_count += 1
-            print(f"\n[告警] ✗ 连接超时！{self.timeout}秒未收到心跳包 (超时次数: {self.timeout_count})")
-            # 添加超时记录
             timeout_record = {
                 'seq': f'TIMEOUT_{self.timeout_count}',
                 'timestamp': current_time,
                 'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                'status': 'TIMEOUT'
+                'status': 'TIMEOUT',
+                'delay': -1
             }
             self.heartbeat_data.append(timeout_record)
-        return self.connected
+            return True  # 发生超时
+        return False  # 无超时
     
     def simulate_network_condition(self):
-        """模拟网络条件（丢包和延迟）"""
+        """模拟网络条件"""
         # 模拟丢包
         if random.random() < self.loss_rate:
-            return False, 0  # 丢包
+            return False, 0
         
         # 模拟延迟
         delay = 0
-        if self.enable_delay and random.random() > 0.7:  # 30%的概率产生延迟
+        if self.enable_delay and random.random() > 0.7:
             delay = random.uniform(0, self.max_delay)
             if delay > 0:
                 time.sleep(delay)
         
         return True, delay
     
-    def run(self, duration=60):
-        """
-        运行心跳模拟
+    def step(self):
+        """执行一步模拟"""
+        if not self.running:
+            return None
         
-        Args:
-            duration: 运行时长（秒），0表示无限运行
-        """
-        print("=" * 70)
-        print("🚁 无人机心跳模拟器启动")
-        print("=" * 70)
-        print(f"⏱️  超时阈值: {self.timeout}秒")
-        print(f"📊 丢包率: {self.loss_rate * 100}%")
-        print(f"⏰ 延迟模拟: {'启用' if self.enable_delay else '禁用'} (最大延迟: {self.max_delay}秒)")
-        print(f"🕐 模拟时长: {duration if duration > 0 else '无限运行'}秒")
-        print("=" * 70)
-        print("\n提示: 按 Ctrl+C 提前结束模拟\n")
+        current_time = time.time()
         
-        start_time = time.time()
-        last_send_time = 0
+        # 每秒发送一次心跳
+        if current_time - self.last_update_time >= 1.0:
+            self.last_update_time = current_time
+            should_send, delay = self.simulate_network_condition()
+            
+            if should_send:
+                heartbeat = self.send_heartbeat()
+                connection_restored = self.receive_heartbeat(heartbeat)
+                return {
+                    'type': 'heartbeat',
+                    'seq': heartbeat['seq'],
+                    'delay': heartbeat.get('delay', 0),
+                    'datetime': heartbeat['datetime'],
+                    'connection_restored': connection_restored
+                }
+            else:
+                self.packet_loss_count += 1
+                lost_record = {
+                    'seq': self.sequence + 1,
+                    'timestamp': current_time,
+                    'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    'status': 'LOST',
+                    'delay': -1
+                }
+                self.heartbeat_data.append(lost_record)
+                return {
+                    'type': 'loss',
+                    'seq': self.sequence + 1,
+                    'datetime': lost_record['datetime']
+                }
         
-        try:
-            while self.running and (duration == 0 or (time.time() - start_time) < duration):
-                current_time = time.time()
-                
-                # 每秒发送一次心跳
-                if current_time - last_send_time >= 1.0:
-                    # 模拟网络条件
-                    should_send, delay = self.simulate_network_condition()
-                    
-                    if should_send:
-                        heartbeat = self.send_heartbeat()
-                        self.receive_heartbeat(heartbeat)
-                    else:
-                        self.packet_loss_count += 1
-                        print(f"[丢包] ✗ 第{self.sequence + 1}号心跳包丢失 (总丢包: {self.packet_loss_count})")
-                        # 记录丢包事件
-                        self.heartbeat_data.append({
-                            'seq': self.sequence + 1,
-                            'timestamp': current_time,
-                            'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                            'status': 'LOST',
-                            'delay': -1
-                        })
-                    
-                    last_send_time = current_time
-                
-                # 检查超时
-                self.check_timeout()
-                
-                # 短暂休眠，避免CPU占用过高
-                time.sleep(0.01)
-                
-        except KeyboardInterrupt:
-            print("\n\n⚠️  收到中断信号，正在停止模拟...")
+        # 检查超时
+        if self.check_timeout():
+            return {
+                'type': 'timeout',
+                'count': self.timeout_count,
+                'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            }
         
-        print("\n" + "=" * 70)
-        print("模拟结束")
-        print("=" * 70)
+        return None
     
+    def start(self):
+        """开始模拟"""
+        self.running = True
+        self.start_time = time.time()
+        self.last_heartbeat_time = time.time()
+        self.last_update_time = time.time()
+        
     def stop(self):
         """停止模拟"""
         self.running = False
     
-    def get_data_for_visualization(self):
-        """获取用于可视化的数据"""
-        data = []
-        for item in self.heartbeat_data:
-            if item['status'] == 'RECEIVED' and 'delay' in item:
-                data.append({
-                    'seq': item['seq'],
-                    'delay': item['delay'],
-                    'timestamp': item['timestamp'],
-                    'datetime': item['datetime'],
-                    'status': item['status']
-                })
-            elif item['status'] in ['LOST', 'TIMEOUT']:
-                data.append({
-                    'seq': item['seq'] if isinstance(item['seq'], int) else -1,
-                    'delay': -1,
-                    'timestamp': item['timestamp'],
-                    'datetime': item['datetime'],
-                    'status': item['status']
-                })
-        return data
+    def reset(self, timeout=3, loss_rate=0.1, enable_delay=True, max_delay=0.5):
+        """重置模拟器"""
+        self.__init__(timeout, loss_rate, enable_delay, max_delay)
     
     def get_statistics(self):
         """获取统计信息"""
@@ -210,281 +209,445 @@ class DroneHeartbeatSimulator:
             delays = [item['delay'] for item in self.heartbeat_data 
                      if item['status'] == 'RECEIVED' and 'delay' in item]
             if delays:
-                stats['avg_delay'] = sum(delays) / len(delays)
-                stats['max_delay'] = max(delays)
-                stats['min_delay'] = min(delays)
-                stats['std_delay'] = (sum((d - stats['avg_delay'])**2 for d in delays) / len(delays))**0.5
+                stats['avg_delay'] = float(np.mean(delays))
+                stats['max_delay'] = float(max(delays))
+                stats['min_delay'] = float(min(delays))
+                stats['std_delay'] = float(np.std(delays))
         
         return stats
-
-
-def visualize_heartbeat_data(data, timeout=3, save_figure=False):
-    """
-    可视化心跳数据
     
-    Args:
-        data: 心跳数据列表
-        timeout: 超时阈值
-        save_figure: 是否保存图表到文件
-    """
+    def get_dataframe(self):
+        """获取数据框"""
+        df_data = []
+        for item in self.heartbeat_data:
+            if item['status'] == 'RECEIVED':
+                df_data.append({
+                    '序号': item['seq'],
+                    '时间': item['datetime'],
+                    '延迟(秒)': f"{item['delay']:.3f}",
+                    '状态': '✓ 正常',
+                    '状态码': 1
+                })
+            elif item['status'] == 'LOST':
+                df_data.append({
+                    '序号': item['seq'],
+                    '时间': item['datetime'],
+                    '延迟(秒)': '-',
+                    '状态': '✗ 丢包',
+                    '状态码': 0
+                })
+            elif item['status'] == 'TIMEOUT':
+                df_data.append({
+                    '序号': item['seq'],
+                    '时间': item['datetime'],
+                    '延迟(秒)': '-',
+                    '状态': '⚠ 超时',
+                    '状态码': -1
+                })
+        return pd.DataFrame(df_data)
+
+
+def create_visualization(data, timeout):
+    """使用Plotly创建可视化图表"""
     if not data:
-        print("没有数据可供可视化")
-        return
+        return None
     
-    # 提取数据
+    # 准备数据
     sequences = []
     delays = []
-    status_colors = []
-    lost_sequences = []
-    timeout_markers = []
+    lost_seqs = []
+    timeout_events = []
     
     for item in data:
-        if item['status'] == 'RECEIVED' and item['seq'] > 0:
+        if item['status'] == 'RECEIVED' and isinstance(item.get('seq'), int):
             sequences.append(item['seq'])
             delays.append(item['delay'])
-            status_colors.append('green')
-        elif item['status'] == 'LOST' and item['seq'] > 0:
-            lost_sequences.append(item['seq'])
-            delays.append(None)
+        elif item['status'] == 'LOST' and isinstance(item.get('seq'), int):
+            lost_seqs.append(item['seq'])
         elif item['status'] == 'TIMEOUT':
-            timeout_markers.append(item)
+            timeout_events.append(item)
     
-    # 创建图表
-    fig = plt.figure(figsize=(14, 10))
-    fig.suptitle('🚁 无人机心跳监控系统', fontsize=16, fontweight='bold')
+    if not sequences:
+        return None
     
-    # 子图1：延迟变化
-    ax1 = plt.subplot(3, 1, 1)
-    if sequences and delays:
-        valid_indices = [i for i, d in enumerate(delays) if d is not None]
-        if valid_indices:
-            valid_seqs = [sequences[i] for i in valid_indices]
-            valid_delays = [delays[i] for i in valid_indices]
-            ax1.plot(valid_seqs, valid_delays, 'o-', color='#1f77b4', 
-                    markersize=6, linewidth=1.5, alpha=0.7, label='心跳延迟')
-            ax1.axhline(y=timeout, color='red', linestyle='--', linewidth=2, 
-                       label=f'超时阈值 ({timeout}s)')
-            
-            # 添加丢包标记
-            if lost_sequences:
-                ax1.scatter(lost_sequences, [0]*len(lost_sequences), 
-                          color='orange', s=100, marker='x', zorder=5,
-                          label='丢包事件')
-            
-            ax1.set_xlabel('心跳序号', fontsize=11)
-            ax1.set_ylabel('延迟 (秒)', fontsize=11)
-            ax1.set_title('心跳包延迟变化图', fontsize=12, fontweight='bold')
-            ax1.grid(True, alpha=0.3, linestyle='--')
-            ax1.legend(loc='upper left', fontsize=10)
-            
-            # 添加统计信息框
-            avg_delay = sum(valid_delays) / len(valid_delays)
-            max_delay = max(valid_delays)
-            min_delay = min(valid_delays)
-            stats_text = f'平均延迟: {avg_delay:.3f}s | 最大延迟: {max_delay:.3f}s | 最小延迟: {min_delay:.3f}s'
-            ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, 
-                    fontsize=9, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    # 创建子图
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('📈 心跳包延迟变化', '🔗 连接状态监控'),
+        vertical_spacing=0.12,
+        row_heights=[0.6, 0.4]
+    )
     
-    # 子图2：连接状态
-    ax2 = plt.subplot(3, 1, 2)
-    status_values = []
-    status_indices = []
+    # 1. 延迟图
+    fig.add_trace(
+        go.Scatter(
+            x=sequences,
+            y=delays,
+            mode='lines+markers',
+            name='心跳延迟',
+            line=dict(color='#1f77b4', width=2),
+            marker=dict(size=8, color='#1f77b4', symbol='circle'),
+            hovertemplate='序号: %{x}<br>延迟: %{y:.3f}秒<extra></extra>'
+        ),
+        row=1, col=1
+    )
     
-    for i, item in enumerate(data):
-        if item['status'] == 'RECEIVED' and item['seq'] > 0:
-            status_values.append(1)
-            status_indices.append(item['seq'])
-        elif item['status'] == 'LOST' and item['seq'] > 0:
-            status_values.append(0)
-            status_indices.append(item['seq'])
+    # 添加超时阈值线
+    fig.add_hline(
+        y=timeout, 
+        line_dash="dash", 
+        line_color="red",
+        line_width=2,
+        annotation_text=f"⚠ 超时阈值 ({timeout}秒)",
+        annotation_position="top right",
+        row=1, col=1
+    )
     
-    if status_indices:
-        ax2.plot(status_indices, status_values, 'o', markersize=6, alpha=0.7)
-        ax2.set_ylim(-0.5, 1.5)
-        ax2.set_yticks([0, 1])
-        ax2.set_yticklabels(['丢包', '正常'], fontsize=10)
-        ax2.set_xlabel('心跳序号', fontsize=11)
-        ax2.set_ylabel('连接状态', fontsize=11)
-        ax2.set_title('连接状态变化图', fontsize=12, fontweight='bold')
-        ax2.grid(True, alpha=0.3, linestyle='--')
+    # 添加丢包标记
+    if lost_seqs:
+        fig.add_trace(
+            go.Scatter(
+                x=lost_seqs,
+                y=[max(delays) * 0.9] * len(lost_seqs),
+                mode='markers',
+                name='丢包事件',
+                marker=dict(size=12, color='orange', symbol='x', line=dict(width=2)),
+                hovertemplate='序号: %{x}<br>状态: 丢包<extra></extra>'
+            ),
+            row=1, col=1
+        )
+    
+    # 2. 连接状态图
+    status_data = []
+    for item in data:
+        if item['status'] == 'RECEIVED' and isinstance(item.get('seq'), int):
+            status_data.append((item['seq'], 1, '正常'))
+        elif item['status'] == 'LOST' and isinstance(item.get('seq'), int):
+            status_data.append((item['seq'], 0, '丢包'))
+    
+    if status_data:
+        status_seqs, status_vals, status_texts = zip(*status_data)
+        colors = ['#00cc00' if v == 1 else '#ffa500' for v in status_vals]
         
-        # 添加颜色区域
-        ax2.axhspan(0.5, 1.5, alpha=0.2, color='green', label='正常')
-        ax2.axhspan(-0.5, 0.5, alpha=0.2, color='orange', label='丢包')
-        ax2.legend(loc='upper left', fontsize=10)
+        fig.add_trace(
+            go.Scatter(
+                x=status_seqs,
+                y=status_vals,
+                mode='markers',
+                name='连接状态',
+                marker=dict(size=10, color=colors, symbol='circle', line=dict(width=1)),
+                text=status_texts,
+                hovertemplate='序号: %{x}<br>状态: %{text}<extra></extra>'
+            ),
+            row=2, col=1
+        )
     
-    # 子图3：超时事件时间线
-    ax3 = plt.subplot(3, 1, 3)
-    if timeout_markers:
-        timeout_times = [item['timestamp'] for item in timeout_markers]
-        timeout_nums = range(1, len(timeout_markers) + 1)
-        ax3.stem(timeout_nums, [1]*len(timeout_markers), basefmt=" ", 
-                linefmt='r-', markerfmt='ro', label='超时事件')
-        ax3.set_xlabel('超时事件序号', fontsize=11)
-        ax3.set_ylabel('事件', fontsize=11)
-        ax3.set_title('超时事件记录', fontsize=12, fontweight='bold')
-        ax3.set_yticks([0, 1])
-        ax3.set_yticklabels(['', '超时'])
-        ax3.legend(loc='upper left', fontsize=10)
-        ax3.grid(True, alpha=0.3, axis='x')
-        
-        # 添加时间信息
-        for i, (t, num) in enumerate(zip(timeout_times, timeout_nums)):
-            time_str = datetime.fromtimestamp(t).strftime('%H:%M:%S')
-            ax3.annotate(f'{time_str}', xy=(num, 1), xytext=(5, 5),
-                        textcoords='offset points', fontsize=8, rotation=45)
-    else:
-        ax3.text(0.5, 0.5, '无超时事件', ha='center', va='center',
-                transform=ax3.transAxes, fontsize=14, color='green')
-        ax3.set_title('超时事件记录 - 无超时', fontsize=12, fontweight='bold')
+    # 添加超时事件标记
+    if timeout_events:
+        timeout_y = [1.2] * len(timeout_events)
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(1, len(timeout_events) + 1)),
+                y=timeout_y,
+                mode='markers',
+                name='超时事件',
+                marker=dict(size=15, color='red', symbol='triangle-down'),
+                text=[f"超时 #{i+1}" for i in range(len(timeout_events))],
+                hovertemplate='%{text}<br>时间: %{customdata}<extra></extra>',
+                customdata=[item['datetime'] for item in timeout_events]
+            ),
+            row=2, col=1
+        )
     
-    plt.tight_layout()
+    # 更新布局
+    fig.update_xaxes(title_text="心跳序号", row=1, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+    fig.update_yaxes(title_text="延迟 (秒)", row=1, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+    fig.update_xaxes(title_text="心跳序号", row=2, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+    fig.update_yaxes(
+        title_text="状态", 
+        ticktext=['丢包', '正常'], 
+        tickvals=[0, 1],
+        range=[-0.2, 1.4],
+        row=2, col=1
+    )
     
-    if save_figure:
-        plt.savefig('heartbeat_visualization.png', dpi=150, bbox_inches='tight')
-        print("\n图表已保存到: heartbeat_visualization.png")
+    fig.update_layout(
+        height=600,
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="black",
+            borderwidth=1
+        ),
+        hovermode='closest',
+        plot_bgcolor='white',
+        paper_bgcolor='white'
+    )
     
-    plt.show()
-
-
-def generate_summary_report(data, stats):
-    """生成数据摘要报告"""
-    print("\n" + "=" * 70)
-    print("📊 数据摘要报告")
-    print("=" * 70)
-    
-    print(f"\n📈 通信统计:")
-    print(f"  总心跳包数: {stats['total_packets']}")
-    print(f"  成功接收: {stats['received']} ({stats['success_rate']:.1f}%)")
-    print(f"  丢包数: {stats['lost']} ({stats['lost']/stats['total_packets']*100:.1f}%)")
-    print(f"  超时次数: {stats['timeout_count']}")
-    
-    if 'avg_delay' in stats:
-        print(f"\n⏱️  延迟统计:")
-        print(f"  平均延迟: {stats['avg_delay']:.3f}秒")
-        print(f"  最大延迟: {stats['max_delay']:.3f}秒")
-        print(f"  最小延迟: {stats['min_delay']:.3f}秒")
-        print(f"  标准差: {stats['std_delay']:.3f}秒")
-    
-    # 连接质量评估
-    print(f"\n🎯 连接质量评估:")
-    if stats['success_rate'] >= 95:
-        quality = "优秀"
-        color = "🟢"
-    elif stats['success_rate'] >= 85:
-        quality = "良好"
-        color = "🟡"
-    elif stats['success_rate'] >= 70:
-        quality = "一般"
-        color = "🟠"
-    else:
-        quality = "较差"
-        color = "🔴"
-    
-    print(f"  {color} {quality} (成功率: {stats['success_rate']:.1f}%)")
-    
-    if stats['timeout_count'] > 0:
-        print(f"\n⚠️  建议: 检测到{stats['timeout_count']}次超时，请检查网络连接质量")
-    
-    print("=" * 70)
-    
-    # 保存数据到文件
-    with open('heartbeat_data.txt', 'w', encoding='utf-8') as f:
-        f.write("=" * 70 + "\n")
-        f.write("无人机心跳数据记录\n")
-        f.write("=" * 70 + "\n\n")
-        
-        for item in data:
-            if item['status'] == 'RECEIVED':
-                f.write(f"[{item['datetime']}] 序号: {item['seq']:4d} | "
-                       f"延迟: {item['delay']:.3f}s | 状态: ✓ 正常\n")
-            elif item['status'] == 'LOST':
-                f.write(f"[{item['datetime']}] 序号: {item['seq']:4d} | "
-                       f"状态: ✗ 丢包\n")
-            elif item['status'] == 'TIMEOUT':
-                f.write(f"[{item['datetime']}] {item['seq']} | 状态: ⚠ 超时\n")
-        
-        f.write("\n" + "=" * 70 + "\n")
-        f.write("统计信息:\n")
-        f.write(f"  总包数: {stats['total_packets']}\n")
-        f.write(f"  成功率: {stats['success_rate']:.1f}%\n")
-        if 'avg_delay' in stats:
-            f.write(f"  平均延迟: {stats['avg_delay']:.3f}s\n")
-        f.write("=" * 70 + "\n")
-    
-    print(f"\n💾 详细数据已保存到: heartbeat_data.txt")
+    return fig
 
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(
-        description='无人机心跳模拟系统',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  python drone_heartbeat.py                    # 默认配置运行60秒
-  python drone_heartbeat.py -d 120             # 运行120秒
-  python drone_heartbeat.py -l 0.2             # 设置20%丢包率
-  python drone_heartbeat.py -t 5               # 设置5秒超时阈值
-  python drone_heartbeat.py --no-delay         # 禁用延迟模拟
-  python drone_heartbeat.py -d 0               # 无限运行直到手动停止
-        """
-    )
+    st.title("🚁 无人机心跳监控系统")
+    st.markdown("实时监控无人机与地面站的心跳通信状态")
+    st.markdown("---")
     
-    parser.add_argument('-d', '--duration', type=int, default=60,
-                       help='模拟运行时长（秒），0表示无限运行 (默认: 60)')
-    parser.add_argument('-t', '--timeout', type=float, default=3.0,
-                       help='超时阈值（秒） (默认: 3.0)')
-    parser.add_argument('-l', '--loss-rate', type=float, default=0.1,
-                       help='丢包率 (0-1) (默认: 0.1)')
-    parser.add_argument('--max-delay', type=float, default=0.5,
-                       help='最大延迟时间（秒） (默认: 0.5)')
-    parser.add_argument('--no-delay', action='store_true',
-                       help='禁用延迟模拟')
-    parser.add_argument('--no-viz', action='store_true',
-                       help='不显示可视化图表')
-    parser.add_argument('--save-fig', action='store_true',
-                       help='保存可视化图表到文件')
+    # 侧边栏配置
+    with st.sidebar:
+        st.header("⚙️ 系统配置")
+        
+        timeout = st.slider("⏱️ 超时阈值 (秒)", 1.0, 10.0, 3.0, 0.5, 
+                           help="超过此时间未收到心跳包将触发超时告警")
+        
+        loss_rate = st.slider("📊 丢包率 (%)", 0, 50, 10, 
+                             help="模拟网络丢包的概率")
+        
+        enable_delay = st.checkbox("⏰ 启用延迟模拟", value=True,
+                                   help="模拟网络传输延迟")
+        
+        if enable_delay:
+            max_delay = st.slider("最大延迟 (秒)", 0.1, 2.0, 0.5, 0.1,
+                                 help="模拟的最大网络延迟时间")
+        else:
+            max_delay = 0.5
+        
+        st.markdown("---")
+        
+        duration = st.number_input("🕐 运行时长 (秒)", min_value=5, max_value=300, value=60, step=5,
+                                  help="模拟运行的总时长")
+        
+        st.markdown("---")
+        
+        # 控制按钮
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("▶️ 开始", use_container_width=True):
+                if 'simulator' in st.session_state:
+                    st.session_state.simulator.reset(timeout, loss_rate/100, enable_delay, max_delay)
+                else:
+                    st.session_state.simulator = DroneHeartbeatSimulator(
+                        timeout=timeout,
+                        loss_rate=loss_rate/100,
+                        enable_delay=enable_delay,
+                        max_delay=max_delay
+                    )
+                st.session_state.simulator.start()
+                st.session_state.simulator_running = True
+                st.session_state.simulation_log = []
+                st.session_state.simulation_start_time = time.time()
+                st.rerun()
+        
+        with col2:
+            if st.button("⏹️ 停止", use_container_width=True):
+                if 'simulator' in st.session_state:
+                    st.session_state.simulator.stop()
+                st.session_state.simulator_running = False
+                st.rerun()
+        
+        st.markdown("---")
+        
+        if st.button("🔄 重置系统", use_container_width=True):
+            if 'simulator' in st.session_state:
+                st.session_state.simulator.reset(timeout, loss_rate/100, enable_delay, max_delay)
+            st.session_state.simulator_running = False
+            st.session_state.simulation_log = []
+            st.rerun()
+        
+        st.markdown("---")
+        st.info("💡 **使用说明**\n\n"
+                "1. 配置系统参数\n"
+                "2. 点击'开始'按钮\n"
+                "3. 实时查看监控数据\n"
+                "4. 可随时停止或重置")
     
-    args = parser.parse_args()
+    # 初始化session state
+    if 'simulator' not in st.session_state:
+        st.session_state.simulator = DroneHeartbeatSimulator(
+            timeout=timeout,
+            loss_rate=loss_rate/100,
+            enable_delay=enable_delay,
+            max_delay=max_delay
+        )
+        st.session_state.simulator_running = False
+        st.session_state.simulation_log = []
     
-    # 验证参数
-    if not 0 <= args.loss_rate <= 1:
-        print("错误: 丢包率必须在0-1之间")
-        sys.exit(1)
+    # 显示实时状态
+    if st.session_state.simulator_running:
+        # 检查是否超时
+        current_time = time.time()
+        elapsed_time = current_time - st.session_state.simulation_start_time
+        
+        if elapsed_time > duration:
+            st.session_state.simulator.stop()
+            st.session_state.simulator_running = False
+            st.success(f"✅ 模拟完成！运行时长 {duration} 秒")
+        else:
+            # 显示进度条
+            progress = elapsed_time / duration
+            st.progress(progress, text=f"模拟进度: {elapsed_time:.0f}/{duration} 秒")
+            
+            # 执行一步模拟
+            result = st.session_state.simulator.step()
+            
+            if result:
+                if result['type'] == 'heartbeat':
+                    if result.get('connection_restored'):
+                        log_msg = f"🟢 连接恢复 - 心跳 {result['seq']}: 延迟 {result['delay']:.3f}s"
+                    else:
+                        log_msg = f"✅ 心跳 {result['seq']}: 延迟 {result['delay']:.3f}s"
+                    st.session_state.simulation_log.insert(0, f"[{result['datetime']}] {log_msg}")
+                elif result['type'] == 'loss':
+                    log_msg = f"❌ 丢包 - 第{result['seq']}号心跳丢失"
+                    st.session_state.simulation_log.insert(0, f"[{result['datetime']}] {log_msg}")
+                elif result['type'] == 'timeout':
+                    log_msg = f"⚠️ 超时告警 - 第{result['count']}次连接超时"
+                    st.session_state.simulation_log.insert(0, f"[{result['datetime']}] {log_msg}")
+            
+            # 限制日志长度
+            st.session_state.simulation_log = st.session_state.simulation_log[:100]
+            
+            # 自动刷新
+            time.sleep(0.05)
+            st.rerun()
     
-    if args.timeout <= 0:
-        print("错误: 超时阈值必须大于0")
-        sys.exit(1)
+    # 显示状态指标
+    st.markdown("### 📊 实时监控指标")
     
-    # 创建模拟器
-    simulator = DroneHeartbeatSimulator(
-        timeout=args.timeout,
-        loss_rate=args.loss_rate,
-        enable_delay=not args.no_delay,
-        max_delay=args.max_delay
-    )
+    col1, col2, col3, col4, col5 = st.columns(5)
     
-    # 运行模拟
-    simulator.run(duration=args.duration)
+    with col1:
+        if st.session_state.simulator.connected:
+            st.metric("🔗 连接状态", "正常", delta="在线", delta_color="normal")
+        else:
+            st.metric("🔗 连接状态", "超时", delta="离线", delta_color="inverse")
     
-    # 获取数据和统计
-    data = simulator.get_data_for_visualization()
-    stats = simulator.get_statistics()
+    with col2:
+        st.metric("📨 心跳序号", st.session_state.simulator.sequence)
     
-    # 生成报告
-    generate_summary_report(data, stats)
+    with col3:
+        st.metric("📤 丢包数量", st.session_state.simulator.packet_loss_count)
     
-    # 可视化（如果需要）
-    if not args.no_viz and data:
-        try:
-            visualize_heartbeat_data(data, timeout=args.timeout, save_figure=args.save_fig)
-        except Exception as e:
-            print(f"\n可视化失败: {e}")
-            print("请确保已安装matplotlib: pip install matplotlib")
+    with col4:
+        st.metric("⚠️ 超时次数", st.session_state.simulator.timeout_count)
     
-    print("\n✅ 程序执行完成")
+    with col5:
+        if st.session_state.simulator.sequence > 0:
+            success_rate = (st.session_state.simulator.sequence - st.session_state.simulator.packet_loss_count) / st.session_state.simulator.sequence * 100
+            st.metric("📈 成功率", f"{success_rate:.1f}%")
+        else:
+            st.metric("📈 成功率", "0%")
+    
+    # 日志区域
+    st.markdown("### 📝 实时事件日志")
+    log_container = st.container()
+    
+    with log_container:
+        if st.session_state.simulation_log:
+            log_text = "\n".join(st.session_state.simulation_log[:20])
+            st.code(log_text, language="log")
+        else:
+            st.info("等待模拟开始...")
+    
+    # 数据显示区域
+    st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📈 可视化分析", "📊 统计报告", "📋 数据表格"])
+    
+    with tab1:
+        data = st.session_state.simulator.heartbeat_data
+        if data:
+            fig = create_visualization(data, timeout)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("数据不足，无法生成图表")
+        else:
+            st.info("暂无数据，请开始模拟")
+    
+    with tab2:
+        if st.session_state.simulator.sequence > 0:
+            stats = st.session_state.simulator.get_statistics()
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 📈 通信统计")
+                st.metric("总心跳包数", stats['total_packets'])
+                st.metric("成功接收", f"{stats['received']} ({stats['success_rate']:.1f}%)")
+                st.metric("丢包数", f"{stats['lost']} ({stats['lost']/stats['total_packets']*100:.1f}%)")
+                st.metric("超时次数", stats['timeout_count'])
+            
+            with col2:
+                if 'avg_delay' in stats:
+                    st.markdown("#### ⏱️ 延迟统计")
+                    st.metric("平均延迟", f"{stats['avg_delay']:.3f} 秒")
+                    st.metric("最大延迟", f"{stats['max_delay']:.3f} 秒")
+                    st.metric("最小延迟", f"{stats['min_delay']:.3f} 秒")
+                    st.metric("延迟标准差", f"{stats['std_delay']:.3f} 秒")
+            
+            # 质量评估
+            st.markdown("#### 🎯 连接质量评估")
+            quality_col1, quality_col2 = st.columns([1, 3])
+            
+            with quality_col1:
+                if stats['success_rate'] >= 95:
+                    st.markdown("# 🟢")
+                    quality = "优秀"
+                    color = "success"
+                elif stats['success_rate'] >= 85:
+                    st.markdown("# 🟡")
+                    quality = "良好"
+                    color = "info"
+                elif stats['success_rate'] >= 70:
+                    st.markdown("# 🟠")
+                    quality = "一般"
+                    color = "warning"
+                else:
+                    st.markdown("# 🔴")
+                    quality = "较差"
+                    color = "error"
+            
+            with quality_col2:
+                if color == "success":
+                    st.success(f"**{quality}** - 通信质量非常好，系统运行稳定")
+                elif color == "info":
+                    st.info(f"**{quality}** - 通信质量正常，可以接受")
+                elif color == "warning":
+                    st.warning(f"**{quality}** - 通信质量一般，建议检查网络")
+                else:
+                    st.error(f"**{quality}** - 通信质量较差，需要优化网络连接")
+        else:
+            st.info("暂无数据，请开始模拟")
+    
+    with tab3:
+        df = st.session_state.simulator.get_dataframe()
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, height=400)
+            
+            # 导出功能
+            col1, col2 = st.columns(2)
+            with col1:
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="📥 下载 CSV 文件",
+                    data=csv,
+                    file_name=f"heartbeat_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # 统计摘要
+                st.markdown(f"**数据摘要:** 共 {len(df)} 条记录")
+                st.markdown(f"**正常:** {len(df[df['状态'] == '✓ 正常'])} 条")
+                st.markdown(f"**丢包:** {len(df[df['状态'] == '✗ 丢包'])} 条")
+                st.markdown(f"**超时:** {len(df[df['状态'] == '⚠ 超时'])} 条")
+        else:
+            st.info("暂无数据，请开始模拟")
 
 
 if __name__ == "__main__":
