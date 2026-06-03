@@ -163,10 +163,10 @@ class DroneHeartbeatSimulator:
         self.start_time = None
         self.last_update_time = 0
         self.drone_position = None
-        self.drone_position_meters = None  # 米制坐标
+        self.drone_position_meters = None
         self.flight_path = []
         self.flight_path_meters = []
-        self.total_flight_distance = 0
+        self.total_flight_distance = 0.0
         
     def send_heartbeat(self):
         """发送心跳包"""
@@ -235,8 +235,6 @@ class DroneHeartbeatSimulator:
         
         # 转换为米制坐标
         x, y = converter.latlon_to_meters(lat, lon)
-        xA, yA = converter.latlon_to_meters(pointA['lat'], pointA['lon'])
-        xB, yB = converter.latlon_to_meters(pointB['lat'], pointB['lon'])
         
         # 计算高度（考虑障碍物）
         base_height = 50
@@ -255,9 +253,9 @@ class DroneHeartbeatSimulator:
         self.drone_position_meters = {'x': x, 'y': y, 'z': height, 'progress': progress}
         
         # 计算飞行距离
-        if self.flight_path_meters:
-            last_x, last_y = self.flight_path_meters[-1]['x'], self.flight_path_meters[-1]['y']
-            distance = math.sqrt((x - last_x)**2 + (y - last_y)**2)
+        if len(self.flight_path_meters) > 0:
+            last_pos = self.flight_path_meters[-1]
+            distance = math.sqrt((x - last_pos['x'])**2 + (y - last_pos['y'])**2)
             self.total_flight_distance += distance
         
         self.flight_path.append(self.drone_position.copy())
@@ -328,7 +326,7 @@ class DroneHeartbeatSimulator:
         self.last_update_time = time.time()
         self.flight_path = []
         self.flight_path_meters = []
-        self.total_flight_distance = 0
+        self.total_flight_distance = 0.0
         if pointA and converter:
             self.drone_position = {'lat': pointA['lat'], 'lon': pointA['lon'], 'height': 50, 'progress': 0}
             x, y = converter.latlon_to_meters(pointA['lat'], pointA['lon'])
@@ -406,7 +404,7 @@ def create_route_planning_map(converter, pointA=None, pointB=None, obstacles=Non
     # 使用高分辨率卫星图层
     m = folium.Map(
         location=[center_lat, center_lon], 
-        zoom_start=17,
+        zoom_start=16,
         tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
         attr='Google Satellite',
         control_scale=True
@@ -433,7 +431,7 @@ def create_route_planning_map(converter, pointA=None, pointB=None, obstacles=Non
     # 显示坐标系信息
     coord_info_html = f'''
     <div style="position: fixed; top: 10px; right: 10px; z-index: 1000; background-color: rgba(0,0,0,0.8); 
-                color: white; padding: 10px; border-radius: 5px; font-size: 12px;">
+                color: white; padding: 10px; border-radius: 5px; font-size: 12px; z-index: 999;">
         <b>🗺️ 坐标系信息</b><br>
         基准点: ({converter.center_lat:.6f}, {converter.center_lon:.6f})<br>
         投影: 局部切平面投影<br>
@@ -503,7 +501,7 @@ def create_route_planning_map(converter, pointA=None, pointB=None, obstacles=Non
             <b>终点 B:</b> ({pointB['lat']:.6f}, {pointB['lon']:.6f})<br>
             <b>航线距离:</b> {distance:.2f} 米<br>
             <b>方位角:</b> {bearing:.1f}°<br>
-            <b>预计飞行时间:</b> {distance/10:.1f} 秒 (速度10m/s)
+            <b>预计飞行时间:</b> {distance/10:.1f} 秒
         </div>
         '''
         m.get_root().html.add_child(folium.Element(route_info))
@@ -539,18 +537,6 @@ def create_route_planning_map(converter, pointA=None, pointB=None, obstacles=Non
                 popup=obs['name']
             ).add_to(m)
     
-    # 添加网格（米制坐标）
-    for i in range(-500, 501, 100):
-        # 经线方向
-        lat1, lon1 = converter.meters_to_latlon(i, -500)
-        lat2, lon2 = converter.meters_to_latlon(i, 500)
-        folium.PolyLine([[lat1, lon1], [lat2, lon2]], color='gray', weight=1, opacity=0.3).add_to(m)
-        
-        # 纬线方向
-        lat1, lon1 = converter.meters_to_latlon(-500, i)
-        lat2, lon2 = converter.meters_to_latlon(500, i)
-        folium.PolyLine([[lat1, lon1], [lat2, lon2]], color='gray', weight=1, opacity=0.3).add_to(m)
-    
     return m
 
 
@@ -563,7 +549,7 @@ def create_flight_monitoring_map(converter, pointA, pointB, obstacles, drone_pos
     else:
         center_lat = converter.center_lat
         center_lon = converter.center_lon
-        zoom = 17
+        zoom = 16
     
     m = folium.Map(
         location=[center_lat, center_lon], 
@@ -716,15 +702,35 @@ def create_3d_flight_path(converter, pointA, pointB, obstacles, flight_path, dro
     return fig
 
 
+# ==================== 预设地点 ====================
+CAMPUS_LOCATIONS = {
+    '图书馆': {'lat': 32.1185, 'lon': 118.9655, 'height': 35, 'description': '杜厦图书馆'},
+    '教学楼A': {'lat': 32.1125, 'lon': 118.9585, 'height': 30, 'description': '思源楼'},
+    '教学楼B': {'lat': 32.1145, 'lon': 118.9600, 'height': 28, 'description': '逸夫楼'},
+    '实验楼': {'lat': 32.1155, 'lon': 118.9705, 'height': 32, 'description': '基础实验楼'},
+    '行政楼': {'lat': 32.1215, 'lon': 118.9670, 'height': 40, 'description': '行政办公楼'},
+    '学生宿舍': {'lat': 32.1245, 'lon': 118.9550, 'height': 20, 'description': '宿舍区'},
+    '体育馆': {'lat': 32.1095, 'lon': 118.9625, 'height': 25, 'description': '体育场馆'},
+    '食堂': {'lat': 32.1235, 'lon': 118.9635, 'height': 15, 'description': '学生食堂'}
+}
+
 # ==================== 主程序 ====================
 def main():
     st.title("🚁 无人机智能监控系统")
     st.markdown("### 支持心跳监控 + 航线规划 + 坐标系转换")
     st.markdown("---")
     
-    # 初始化坐标系转换器（南京大学仙林校区中心点）
+    # 初始化session state
     if 'converter' not in st.session_state:
         st.session_state.converter = CoordinateConverter(center_lat=32.118, center_lon=118.9625)
+    
+    if 'simulator' not in st.session_state:
+        st.session_state.simulator = DroneHeartbeatSimulator(timeout=3, loss_rate=0.1, enable_delay=True, max_delay=0.5)
+        st.session_state.simulator_running = False
+        st.session_state.simulation_log = []
+        st.session_state.pointA = {'lat': 32.1125, 'lon': 118.9585, 'height': 0}
+        st.session_state.pointB = {'lat': 32.1245, 'lon': 118.9550, 'height': 0}
+        st.session_state.obstacles = []
     
     # 侧边栏配置
     with st.sidebar:
@@ -733,36 +739,26 @@ def main():
         # 坐标系设置
         with st.expander("🗺️ 坐标系设置", expanded=True):
             st.info(f"当前基准点: 南京大学仙林校区")
-            center_lat = st.number_input("基准点纬度", value=32.118, format="%.6f", key="center_lat")
-            center_lon = st.number_input("基准点经度", value=118.9625, format="%.6f", key="center_lon")
+            center_lat = st.number_input("基准点纬度", value=st.session_state.converter.center_lat, format="%.6f", key="center_lat")
+            center_lon = st.number_input("基准点经度", value=st.session_state.converter.center_lon, format="%.6f", key="center_lon")
             
             if st.button("更新坐标系基准点"):
                 st.session_state.converter = CoordinateConverter(center_lat, center_lon)
-                st.success(f"坐标系已更新！")
+                st.success("✅ 坐标系已更新！")
         
         # 通信参数设置
         with st.expander("📡 通信参数", expanded=True):
-            timeout = st.slider("超时阈值 (秒)", 1.0, 10.0, 3.0, 0.5)
-            loss_rate = st.slider("丢包率 (%)", 0, 50, 10) / 100
-            enable_delay = st.checkbox("启用延迟模拟", value=True)
-            max_delay = st.slider("最大延迟 (秒)", 0.1, 2.0, 0.5, 0.1) if enable_delay else 0.5
+            timeout = st.slider("超时阈值 (秒)", 1.0, 10.0, 3.0, 0.5, key="timeout")
+            loss_rate = st.slider("丢包率 (%)", 0, 50, 10, key="loss_rate") / 100
+            enable_delay = st.checkbox("启用延迟模拟", value=True, key="enable_delay")
+            max_delay = st.slider("最大延迟 (秒)", 0.1, 2.0, 0.5, 0.1, key="max_delay") if enable_delay else 0.5
         
         # 重置按钮
         if st.button("🔄 重置系统", use_container_width=True):
-            if 'simulator' in st.session_state:
-                st.session_state.simulator.reset(timeout, loss_rate, enable_delay, max_delay)
+            st.session_state.simulator.reset(timeout, loss_rate, enable_delay, max_delay)
             st.session_state.simulator_running = False
             st.session_state.simulation_log = []
             st.rerun()
-    
-    # 初始化模拟器
-    if 'simulator' not in st.session_state:
-        st.session_state.simulator = DroneHeartbeatSimulator(timeout, loss_rate, enable_delay, max_delay)
-        st.session_state.simulator_running = False
-        st.session_state.simulation_log = []
-        st.session_state.pointA = {'lat': 32.1125, 'lon': 118.9585, 'height': 0}
-        st.session_state.pointB = {'lat': 32.1245, 'lon': 118.9550, 'height': 0}
-        st.session_state.obstacles = []
     
     # 创建两个主要标签页
     tab1, tab2 = st.tabs(["🗺️ 航线规划", "📡 飞行监控"])
@@ -777,6 +773,28 @@ def main():
         with col1:
             st.subheader("📍 航线设置")
             
+            # 快速选择预设地点
+            st.markdown("#### 📍 快速选择")
+            col_preset1, col_preset2 = st.columns(2)
+            with col_preset1:
+                presetA = st.selectbox("快速选择起点", ["自定义"] + list(CAMPUS_LOCATIONS.keys()), key="presetA")
+                if presetA != "自定义":
+                    st.session_state.pointA = {
+                        'lat': CAMPUS_LOCATIONS[presetA]['lat'],
+                        'lon': CAMPUS_LOCATIONS[presetA]['lon'],
+                        'height': 0
+                    }
+            with col_preset2:
+                presetB = st.selectbox("快速选择终点", ["自定义"] + list(CAMPUS_LOCATIONS.keys()), key="presetB")
+                if presetB != "自定义":
+                    st.session_state.pointB = {
+                        'lat': CAMPUS_LOCATIONS[presetB]['lat'],
+                        'lon': CAMPUS_LOCATIONS[presetB]['lon'],
+                        'height': 0
+                    }
+            
+            st.markdown("---")
+            
             # 起点设置
             st.markdown("#### 🚁 起点 A")
             col_a1, col_a2 = st.columns(2)
@@ -784,7 +802,7 @@ def main():
                 pointA_lat = st.number_input("纬度", value=st.session_state.pointA['lat'], format="%.6f", key="plan_latA")
             with col_a2:
                 pointA_lon = st.number_input("经度", value=st.session_state.pointA['lon'], format="%.6f", key="plan_lonA")
-            pointA_height = st.number_input("高度 (米)", value=0, key="plan_heightA")
+            pointA_height = st.number_input("高度 (米)", value=st.session_state.pointA.get('height', 0), key="plan_heightA")
             
             # 终点设置
             st.markdown("#### 🏁 终点 B")
@@ -793,7 +811,7 @@ def main():
                 pointB_lat = st.number_input("纬度", value=st.session_state.pointB['lat'], format="%.6f", key="plan_latB")
             with col_b2:
                 pointB_lon = st.number_input("经度", value=st.session_state.pointB['lon'], format="%.6f", key="plan_lonB")
-            pointB_height = st.number_input("高度 (米)", value=0, key="plan_heightB")
+            pointB_height = st.number_input("高度 (米)", value=st.session_state.pointB.get('height', 0), key="plan_heightB")
             
             # 障碍物设置
             st.markdown("#### 🏗️ 障碍物")
@@ -866,6 +884,7 @@ def main():
         with col_ctrl1:
             if not st.session_state.simulator_running:
                 if st.button("▶️ 开始飞行", use_container_width=True):
+                    # 更新通信参数
                     st.session_state.simulator.reset(timeout, loss_rate, enable_delay, max_delay)
                     st.session_state.simulator.start(st.session_state.pointA, st.session_state.pointB, st.session_state.converter)
                     st.session_state.simulator_running = True
@@ -907,7 +926,8 @@ def main():
             else:
                 st.metric("成功率", "0%")
         with col6:
-            st.metric("飞行距离", f"{st.session_state.simulator.total_flight_distance:.1f}m")
+            distance = st.session_state.simulator.total_flight_distance
+            st.metric("飞行距离", f"{distance:.1f}m")
         
         # 运行模拟
         if st.session_state.simulator_running:
