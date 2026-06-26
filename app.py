@@ -640,13 +640,39 @@ def main():
                               "航点数": len(full_path),
                               "路径长度(m)": round(sum(dist(full_path[i], full_path[i+1]) for i in range(len(full_path)-1)) * 111000, 1)})
 
+    # ==================== 规划页面（地图左，管理右） ====================
     if page == "规划":
         st.header("航线规划 - 多航点避障")
         st.info("📝 点击地图📐画多边形→设置高度→「添加障碍物」；下方可添加/删除航点（起点和终点固定）")
 
-        col1, col2 = st.columns([1, 1.5])
+        # 列宽调整：地图占 1.5，管理占 1
+        col1, col2 = st.columns([1.5, 1])
 
+        # ----- col1: 地图（原 col2） -----
         with col1:
+            center = st.session_state.waypoints[0] or SCHOOL_CENTER
+            if st.session_state.full_path is None:
+                st.session_state.full_path = plan_full_path(st.session_state.waypoints,
+                                                              st.session_state.obs,
+                                                              st.session_state.alt,
+                                                              st.session_state.safe_rad,
+                                                              st.session_state.sel_strat)
+            drone_pos = st.session_state.hb.pos if st.session_state.running else None
+            m = make_map(center, st.session_state.waypoints, st.session_state.obs, st.session_state.hist,
+                        st.session_state.full_path, map_type,
+                        st.session_state.safe_rad, st.session_state.alt, drone_pos)
+            output = st_folium(m, width=700, height=550, returned_objects=["last_active_drawing"])
+            if output and output.get("last_active_drawing"):
+                d = output["last_active_drawing"]
+                if d and d.get("geometry", {}).get("type") == "Polygon":
+                    coords = d["geometry"]["coordinates"][0]
+                    if len(coords) >= 3:
+                        st.session_state.pending_poly = [[p[0], p[1]] for p in coords]
+                        st.success("已捕获多边形，请设置高度后点「添加障碍物」")
+            st.caption("图例：绿色=避障航线 红色=障碍物 橙色=安全区 | 蓝色旗帜=中间航点")
+
+        # ----- col2: 航点管理（原 col1） -----
+        with col2:
             st.markdown("#### 🗺️ 航点管理")
 
             # 起点
@@ -749,28 +775,7 @@ def main():
             if st.session_state.full_path:
                 st.caption(f"完整路径含{len(st.session_state.full_path)}个航段点")
 
-        with col2:
-            center = st.session_state.waypoints[0] or SCHOOL_CENTER
-            if st.session_state.full_path is None:
-                st.session_state.full_path = plan_full_path(st.session_state.waypoints,
-                                                              st.session_state.obs,
-                                                              st.session_state.alt,
-                                                              st.session_state.safe_rad,
-                                                              st.session_state.sel_strat)
-            drone_pos = st.session_state.hb.pos if st.session_state.running else None
-            m = make_map(center, st.session_state.waypoints, st.session_state.obs, st.session_state.hist,
-                        st.session_state.full_path, map_type,
-                        st.session_state.safe_rad, st.session_state.alt, drone_pos)
-            output = st_folium(m, width=700, height=550, returned_objects=["last_active_drawing"])
-            if output and output.get("last_active_drawing"):
-                d = output["last_active_drawing"]
-                if d and d.get("geometry", {}).get("type") == "Polygon":
-                    coords = d["geometry"]["coordinates"][0]
-                    if len(coords) >= 3:
-                        st.session_state.pending_poly = [[p[0], p[1]] for p in coords]
-                        st.success("已捕获多边形，请设置高度后点「添加障碍物」")
-            st.caption("图例：绿色=避障航线 红色=障碍物 橙色=安全区 | 蓝色旗帜=中间航点")
-
+    # ==================== 监控页面 ====================
     elif page == "监控":
         st.header("📡 飞行实时画面 - 任务执行监控")
 
@@ -920,6 +925,7 @@ def main():
 
         st.info(f"🔄 监控页面每 {HEARTBEAT_INTERVAL} 秒自动刷新 | 位置更新次数: {st.session_state.update_counter}")
 
+    # ==================== 障碍物页面 ====================
     elif page == "障碍物":
         st.header("🏗️ 障碍物管理")
         st.info(f"当前障碍物数量: {len(st.session_state.obs)}")
@@ -950,6 +956,7 @@ def main():
         folium.Marker([B_DFT[1], B_DFT[0]], popup="终点", icon=folium.Icon(color='red')).add_to(m)
         st_folium(m, width=700, height=500, returned_objects=[])
 
+    # ==================== 通信页面 ====================
     elif page == "通信":
         show_communication_page()
 
