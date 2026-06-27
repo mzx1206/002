@@ -410,26 +410,28 @@ class HeartbeatSim:
             "remaining_distance": remaining_dist
         }
 
-# ==================== 障碍物缓存（JSON 持久化）====================
+# ==================== 障碍物缓存（JSON 持久化，带路径可视化）====================
 def save_cache():
-    """保存障碍物到 JSON 文件"""
+    """保存障碍物到 JSON 文件，并显示绝对路径"""
     try:
+        full_path = os.path.abspath(CONFIG_FILE)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(st.session_state.obs, f, ensure_ascii=False, indent=2)
-        st.success(f"保存 {len(st.session_state.obs)} 个障碍物到 {CONFIG_FILE}")
+        st.success(f"✅ 已保存 {len(st.session_state.obs)} 个障碍物到 `{full_path}`")
     except Exception as e:
         st.error(f"保存失败: {e}")
 
 def load_cache():
-    """从 JSON 文件加载障碍物"""
+    """从 JSON 文件加载障碍物，并显示绝对路径"""
+    full_path = os.path.abspath(CONFIG_FILE)
     if not os.path.exists(CONFIG_FILE):
-        st.warning(f"配置文件 {CONFIG_FILE} 不存在")
+        st.warning(f"配置文件 `{full_path}` 不存在")
         return False
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         st.session_state.obs = data
-        st.success(f"加载 {len(data)} 个障碍物从 {CONFIG_FILE}")
+        st.success(f"✅ 已从 `{full_path}` 加载 {len(data)} 个障碍物")
         return True
     except Exception as e:
         st.error(f"加载失败: {e}")
@@ -938,6 +940,11 @@ def main():
     # ==================== 障碍物页面 ====================
     elif page == "障碍物":
         st.header("🏗️ 障碍物管理")
+
+        # 显示当前保存路径（可视化）
+        config_path = os.path.abspath(CONFIG_FILE)
+        st.info(f"📁 当前障碍物数据保存路径：`{config_path}`")
+
         st.info(f"当前障碍物数量: {len(st.session_state.obs)}")
 
         for i, obs in enumerate(st.session_state.obs):
@@ -945,14 +952,16 @@ def main():
             col1.write(f"{obs.get('name', f'障碍物{i+1}')} - 高度: {obs.get('height', 20)}m")
             if col3.button("删除", key=f"del_obs_{i}"):
                 st.session_state.obs.pop(i)
+                st.experimental_rerun()
 
         if st.button("清空所有障碍物"):
             st.session_state.obs = []
+            st.experimental_rerun()
 
-        if st.button("💾 保存到缓存"):
+        if st.button("💾 保存到文件"):
             save_cache()
 
-        if st.button("📂 从缓存加载"):
+        if st.button("📂 从文件加载"):
             load_cache()
 
         st.markdown("### 🗺️ 障碍物分布图")
