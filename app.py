@@ -410,20 +410,30 @@ class HeartbeatSim:
             "remaining_distance": remaining_dist
         }
 
-# ==================== 障碍物缓存 ====================
+# ==================== 障碍物缓存（JSON 持久化）====================
 def save_cache():
-    if 'saved' not in st.session_state: st.session_state.saved = []
-    import copy
-    st.session_state.saved = copy.deepcopy(st.session_state.obs)
-    st.success(f"保存 {len(st.session_state.obs)} 个障碍物")
+    """保存障碍物到 JSON 文件"""
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(st.session_state.obs, f, ensure_ascii=False, indent=2)
+        st.success(f"保存 {len(st.session_state.obs)} 个障碍物到 {CONFIG_FILE}")
+    except Exception as e:
+        st.error(f"保存失败: {e}")
 
 def load_cache():
-    if 'saved' in st.session_state and st.session_state.saved:
-        st.session_state.obs = st.session_state.saved
-        st.success(f"加载 {len(st.session_state.obs)} 个障碍物")
+    """从 JSON 文件加载障碍物"""
+    if not os.path.exists(CONFIG_FILE):
+        st.warning(f"配置文件 {CONFIG_FILE} 不存在")
+        return False
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        st.session_state.obs = data
+        st.success(f"加载 {len(data)} 个障碍物从 {CONFIG_FILE}")
         return True
-    st.warning("无缓存")
-    return False
+    except Exception as e:
+        st.error(f"加载失败: {e}")
+        return False
 
 # ==================== 安全半径可视化 ====================
 def add_safety(m, obs, rad, h):
